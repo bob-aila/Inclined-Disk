@@ -1,1 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Flask Classical Mechanics Project</title>
+    <style>
+        body { font-family: sans-serif; display: flex; justify-content: center; align-items: flex-start; background-color: #f4f7f9; padding: 20px; }
+        .container { display: flex; width: 1000px; background-color: white; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .controls { padding: 20px; width: 300px; border-right: 1px solid #eee; }
+        .sim-area { padding: 20px; flex-grow: 1; }
+        h1 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 5px; margin-bottom: 15px; }
+        button { padding: 10px 15px; margin-right: 5px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        .data-box { background-color: #e9f7ff; padding: 15px; border-radius: 4px; margin-top: 20px; }
+        .data-item { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 0.9em; }
+        .slider-group { margin-bottom: 15px; }
+        #canvas { border: 1px solid #ccc; background-color: #f8f8f8; }
+    </style>
+</head>
+<body>
 
+<div class="container">
+    <div class="controls">
+        <h1>Rolling Disk Control</h1>
+
+        <div class="slider-group">
+            <label id="angle-label">Inclination Angle: 30°</label>
+            <input type="range" id="angle-slider" min="5" max="60" value="30" style="width: 100%;">
+        </div>
+        
+        <div class="data-item"><span>Static Friction (mu_s):</span> <span>0.50 (Fixed)</span></div>
+        <div class="data-item"><span>Kinetic F(mu_k):</span> <span>0.10 (Fixed)</span></div>
+        <br>
+
+        <div class="slider-group">
+            <label for="mode-select">Motion Mode:</label>
+            <select id="mode-select" style="width: 100%; padding: 8px; margin-top: 5px;">
+                <option value="sliproll">SlipRoll (Auto Transition)</option>
+                <option value="rolling">Pure Rolling (Forced)</option>
+                <option value="sliding_block">Pure Sliding (No Rotation)</option>
+            </select>
+        </div>
+
+        <button id="play-pause-btn">Start</button>
+        <button id="reset-btn" style="background-color: #6c757d;">Reset</button>
+
+        <div class="data-box">
+            <h2>Real-time Data</h2>
+            <div class="data-item"><span>Current Regime:</span> <span id="regime-data">Rest</span></div>
+            <div class="data-item"><span>Time:</span> <span id="time-data">0.00 s</span></div>
+            <div class="data-item"><span>Linear Velocity (v):</span> <span id="v-data">0.00 m/s</span></div>
+            <div class="data-item"><span>Angular Velocity (\omega):</span> <span id="omega-data">0.00 rad/s</span></div>
+            <div class="data-item"><span>Friction Force (T):</span> <span id="friction-data">0.00 N</span></div>
+            <div class="data-item"><span>Normal Force (N):</span> <span id="normal-data">0.00 N</span></div>
+        </div>
+    </div>
+
+    <div class="sim-area">
+        <canvas id="canvas" width="700" height="400"></canvas>
+    </div>
+</div>
+
+<script>
+    // --- CANVAS AND DRAWING CONSTANTS ---
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const R_PIXELS = 30; // Disk radius in pixels
+    const PIXELS_PER_METER = 50; // Scaling factor: 50 pixels = 1 meter
+    const GROUND_Y_PIXEL = canvas.height - 240; // Adjusted for better visual space
+    const START_X_PIXEL = 50; // Starting X coordinate for the plane on the canvas
+    
+    // --- SIMULATION STATE ---
+    let isPlaying = false;
+    let simData = {
+        x: 0, v: 0, phi: 0, omega: 0, T: 0, N: 0, time: 0, current_regime: 'Rest'
+    };
+    let angleRad = (30 * Math.PI) / 180;
+    const dt = 0.05; // Time step (s)
+
+    // --- DOM ELEMENTS ---
+    const playPauseBtn = document.getElementById('play-pause-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    const angleSlider = document.getElementById('angle-slider');
+    const angleLabel = document.getElementById('angle-label');
+    const modeSelect = document.getElementById('mode-select');
+    const regimeData = document.getElementById('regime-data'); // New data display
+
+    // --- FUNCTIONS ---
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // 1. Draw the inclined plane
+        const angleDeg = angleSlider.value;
+        angleRad = (angleDeg * Math.PI) / 180;
+        
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        
+        const distance = 600; // Total length of the plane projection
+        const endX = START_X_PIXEL + distance * Math.cos(angleRad);
+        const endY = GROUND_Y_PIXEL + distance * Math.sin(angleRad);
+
+        ctx.moveTo(START_X_PIXEL, GROUND_Y_PIXEL);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+
+        // 2. Calculate Disk Position (Mapping meters 'simData.x' to pixels)
+        const x_along_plane_pixels = simData.x * PIXELS_PER_METER;
+        
+        // Disk Center X and Y coordinates
+        const diskX = START_X_PIXEL + x_along_plane_pixels * Math.cos(angleRad);
+        const diskY = GROUND_Y_PIXEL + x_along_plane_pixels * Math.sin(angleRad) - R_PIXELS;
+
+        // Check if disk is still on the canvas
+        if (diskX > canvas.width + R_PIXELS || diskY > canvas.height + R_PIXELS) {
+            clearInterval(simInterval);
+            isPlaying = false;
+            playPauseBtn.textContent = 'Start';
+            return;
+        }
+
+        // 3. Draw the disk
+        let diskColor;
+        if (simData.current_regime && simData.current_regime.includes('Rolling')) {
+            diskColor = '#007bff'; // Blue for Rolling
+        } else if (simData.current_regime && simData.current_regime.includes('Sliding')) {
+            diskColor = '#dc3545'; // Red for Slipping
+        } else {
+             diskColor = '#6c757d'; // Default
+        }
+        
+        ctx.fillStyle = diskColor;
+        ctx.beginPath();
+        ctx.arc(diskX, diskY, R_PIXELS, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.strokeStyle = '#0056b3';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        // 4. Radius showing rotation
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(diskX, diskY);
+        ctx.lineTo(
+            diskX + R_PIXELS * Math.cos(simData.phi - angleRad), 
+            diskY + R_PIXELS * Math.sin(simData.phi - angleRad)
+        );
+        ctx.stroke();
+
+        // 5. Update Data Display
+        regimeData.textContent = simData.current_regime || 'Rest';
+        document.getElementById('time-data').textContent = `${simData.time.toFixed(2)} s`;
+        document.getElementById('v-data').textContent = `${simData.v.toFixed(2)} m/s`;
+        document.getElementById('omega-data').textContent = `${simData.omega.toFixed(2)} rad/s`;
+        document.getElementById('friction-data').textContent = `${simData.T.toFixed(2)} N`;
+        document.getElementById('normal-data').textContent = `${simData.N.toFixed(2)} N`;
+    }
+
+    // Main simulation loop timer
+    let simInterval = null;
+
+    async function updateSimulation() {
+        // NOTE: We don't send mu_s here because it's fixed in the backend for this version.
+        const response = await fetch('/api/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                angle: Number(angleSlider.value),
+                mu_k: 0.10, // Fixed mu_k
+                mode: modeSelect.value,
+                dt: dt
+            }),
+        });
+        simData = await response.json();
+        draw();
+    }
+
+    function togglePlay() {
+        isPlaying = !isPlaying;
+        if (isPlaying) {
+            playPauseBtn.textContent = 'Pause';
+            simInterval = setInterval(updateSimulation, dt * 1000); 
+        } else {
+            playPauseBtn.textContent = 'Start';
+            clearInterval(simInterval);
+        }
+    }
+
+    async function resetSim() {
+        clearInterval(simInterval);
+        isPlaying = false;
+        playPauseBtn.textContent = 'Start';
+
+        const response = await fetch('/api/reset', { method: 'POST' });
+        const data = await response.json();
+        simData = data.state;
+        
+        draw(); // Redraw the initial state
+    }
+
+    // --- EVENT LISTENERS ---
+    playPauseBtn.addEventListener('click', togglePlay);
+    resetBtn.addEventListener('click', resetSim);
+    
+    angleSlider.addEventListener('input', () => {
+        angleLabel.textContent = `Inclination Angle: ${angleSlider.value}°`;
+        // Reset state when angle changes to reflect new physics conditions
+        resetSim(); 
+    });
+
+    modeSelect.addEventListener('change', resetSim); // Reset when mode changes
+
+    // Initial draw
+    resetSim(); 
+</script>
+
+</body>
+</html>
